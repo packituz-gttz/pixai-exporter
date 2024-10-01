@@ -34,7 +34,9 @@ class PixAiExporter:
         self._metrics: dict = {
             'pixai_available_tokens_total': Gauge('pixai_available_tokens_total', 'Total amount of tokens available'),
             'pixai_token_days_until_expiration': Gauge('pixai_token_days_until_expiration',
-                                                       'Number of days until token expires', ['token'])
+                                                       'Number of days until token expires', ['token']),
+            'pixai_days_until_subscription_expiration': Gauge('pixai_days_until_subscription_expiration',
+                                                              'Number of days until subscription expires'),
         }
         start_http_server(port=port)
         while should_continue():
@@ -59,6 +61,7 @@ class PixAiExporter:
         new_metrics: dict = {
             'pixai_available_tokens_total': self._get_available_tokens(),
             'pixai_token_days_until_expiration': self._get_tokens_days_until_expiration(),
+            'pixai_days_until_subscription_expiration': self._get_subscription_days_until_expiration(),
         }
         return new_metrics
 
@@ -88,11 +91,25 @@ class PixAiExporter:
             }))
         return tokens
 
+    def _get_subscription_days_until_expiration(self) -> list[Metric]:
+        payload = ("{\"query\":\"\\n    query getMyMembership {\\n  me {\\n    id\\n    "
+                             "membership {\\n      ...MembershipBase\\n    }\\n    subscription {\\n"
+                             "      ...UserSubscriptionBase\\n    }\\n  }\\n}\\n    \\n    fragment MembershipBase"
+                             " on Membership {\\n  membershipId\\n  tier\\n  privilege\\n}\\n    \\n\\n    "
+                             "fragment UserSubscriptionBase on UserSubscription {\\n  provider\\n  planId\\n  "
+                             "interval\\n  status\\n  startAt\\n  endAt\\n  cancelAtPeriodEnd\\n  invoice\\n  "
+                             "lastPaymentError\\n  nextAction\\n}\\n    \",\"variables\":{}}")
+        response = requests.request("POST", self.PIXAI_URL, headers=self.headers, data=payload,
+                                    timeout=self._timeout).json()
+        return [Metric(value=self._calculate_expiration_days(response["data"]["me"]["subscription"]["endAt"]))]
+
     @staticmethod
     def _calculate_expiration_days(expiration_date: str) -> int:
         utc_tz = dt.timezone.utc
         expiration_date_utc = dt.datetime.strptime(expiration_date, '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=utc_tz)
         utc_now_date = dt.datetime.now(utc_tz)
+        print(expiration_date_utc)
+        print(utc_now_date)
         return (expiration_date_utc - utc_now_date).days
 
 
